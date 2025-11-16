@@ -295,3 +295,9 @@ $RECYCLE.BIN/
 
 
 # End of https://www.toptal.com/developers/gitignore/api/swift,swiftpackagemanager,swiftpm,macos,linux,windows,jetbrains+all,xcode,xcodeinjection,visualstudiocode
+
+# Ignore all .env files
+.env*
+# But don't ignore the template
+!.env.example
+!.env.template
