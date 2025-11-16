@@ -8,9 +8,9 @@ enum Config {
     /// API endpoints
     enum Endpoints {
         static let register = "/auth/register"
-        static let completeRegister = "/auth/register/complete"
+        static let registerComplete = "/auth/register/complete"
         static let login = "/auth/login"
-        static let completeLogin = "/auth/login/complete"
+        static let loginComplete = "/auth/login/complete"
         static let userProfile = "/users/me"
         static let wallets = "/wallets"
         static let transactions = "/transactions"
@@ -28,7 +28,7 @@ enum Config {
 
     /// WebAuthn configuration
     enum WebAuthn {
-        static let rpId = "localhost"
+        static let relyingPartyID = "localhost"
         static let timeout: TimeInterval = 60
     }
 
