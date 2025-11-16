@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreNFC
+import Combine
 
 /// Tap to Pay screen with NFC functionality
 struct TapToPayView: View {

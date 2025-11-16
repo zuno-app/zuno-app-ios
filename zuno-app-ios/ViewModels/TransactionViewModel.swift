@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Combine
 
 /// ViewModel for transaction management
 @MainActor
@@ -147,10 +148,8 @@ final class TransactionViewModel: ObservableObject {
         showError = false
 
         do {
-            let transaction: LocalTransaction
-
             if useZunoTag {
-                transaction = try await transactionService.sendToZunoTag(
+                _ = try await transactionService.sendToZunoTag(
                     toZunoTag: recipientZunoTag,
                     amount: amount,
                     tokenSymbol: tokenSymbol,
@@ -158,7 +157,7 @@ final class TransactionViewModel: ObservableObject {
                     description: transactionDescription.isEmpty ? nil : transactionDescription
                 )
             } else {
-                transaction = try await transactionService.sendToAddress(
+                _ = try await transactionService.sendToAddress(
                     toAddress: recipientAddress,
                     amount: amount,
                     tokenSymbol: tokenSymbol,

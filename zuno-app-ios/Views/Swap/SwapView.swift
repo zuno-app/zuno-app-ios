@@ -247,13 +247,13 @@ struct SwapView: View {
 
     private var swapDetailsCard: some View {
         VStack(spacing: 12) {
-            DetailRow(title: "Slippage Tolerance", value: "\(String(format: "%.1f", slippage))%")
+            SwapDetailRow(title: "Slippage Tolerance", value: "\(String(format: "%.1f", slippage))%")
             Divider()
-            DetailRow(title: "Network Fee", value: "~$0.50")
+            SwapDetailRow(title: "Network Fee", value: "~$0.50")
             Divider()
-            DetailRow(title: "Protocol Fee", value: "~$0.25")
+            SwapDetailRow(title: "Protocol Fee", value: "~$0.25")
             Divider()
-            DetailRow(title: "Minimum Received", value: "\(calculateMinimumReceived()) \(toToken.symbol)")
+            SwapDetailRow(title: "Minimum Received", value: "\(calculateMinimumReceived()) \(toToken.symbol)")
         }
         .padding()
         .background(Color(.secondarySystemBackground))

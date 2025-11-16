@@ -72,6 +72,7 @@ final class LocalWallet {
     var lastSyncedAt: Date?
     var createdAt: Date
     var updatedAt: Date
+    var userId: String  // Added for predicate queries
 
     var user: LocalUser?
 
@@ -83,6 +84,7 @@ final class LocalWallet {
         walletAddress: String,
         blockchain: String,
         accountType: String,
+        userId: String = "",
         isPrimary: Bool = false,
         name: String? = nil,
         balance: String? = nil,
@@ -95,6 +97,7 @@ final class LocalWallet {
         self.walletAddress = walletAddress
         self.blockchain = blockchain
         self.accountType = accountType
+        self.userId = userId
         self.isPrimary = isPrimary
         self.name = name
         self.balance = balance
@@ -106,12 +109,13 @@ final class LocalWallet {
     }
 
     /// Create LocalWallet from API response
-    static func from(_ response: WalletResponse) -> LocalWallet {
+    static func from(_ response: WalletResponse, userId: String = "") -> LocalWallet {
         return LocalWallet(
             id: response.id,
             walletAddress: response.walletAddress,
             blockchain: response.blockchain,
             accountType: response.accountType,
+            userId: userId,
             isPrimary: response.isPrimary,
             createdAt: response.createdAt,
             updatedAt: Date()
@@ -158,6 +162,7 @@ final class LocalTransaction {
     var confirmations: Int?
     var createdAt: Date
     var updatedAt: Date
+    var walletId: String  // Added for predicate queries
 
     var wallet: LocalWallet?
 
@@ -167,6 +172,7 @@ final class LocalTransaction {
         status: TransactionStatus,
         amount: String,
         tokenSymbol: String,
+        walletId: String = "",
         fromAddress: String? = nil,
         toAddress: String? = nil,
         toZunoTag: String? = nil,
@@ -182,6 +188,7 @@ final class LocalTransaction {
         self.status = status
         self.amount = amount
         self.tokenSymbol = tokenSymbol
+        self.walletId = walletId
         self.fromAddress = fromAddress
         self.toAddress = toAddress
         self.toZunoTag = toZunoTag
@@ -194,13 +201,14 @@ final class LocalTransaction {
     }
 
     /// Create LocalTransaction from API response
-    static func from(_ response: TransactionResponse) -> LocalTransaction {
+    static func from(_ response: TransactionResponse, walletId: String = "") -> LocalTransaction {
         return LocalTransaction(
             id: response.id,
             transactionType: TransactionType(rawValue: response.transactionType) ?? .send,
             status: TransactionStatus(rawValue: response.status) ?? .pending,
             amount: response.amount,
             tokenSymbol: response.tokenSymbol,
+            walletId: walletId,
             fromAddress: response.fromAddress,
             toAddress: response.toAddress,
             toZunoTag: response.toZunoTag,

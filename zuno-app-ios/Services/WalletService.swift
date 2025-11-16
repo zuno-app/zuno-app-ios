@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Combine
 
 /// Service for wallet management
 @MainActor
@@ -37,16 +38,24 @@ final class WalletService: ObservableObject {
 
                 // Save to local database
                 for response in walletResponses {
-                    try await saveWallet(response, for: user)
+                    _ = try await saveWallet(response, for: user)
                 }
             }
 
             // Load from local database
+            let userId = user.id
             let descriptor = FetchDescriptor<LocalWallet>(
-                predicate: #Predicate { $0.user?.id == user.id },
-                sortBy: [SortDescriptor(\.isPrimary, order: .reverse), SortDescriptor(\.createdAt)]
+                predicate: #Predicate { $0.userId == userId }
             )
-            self.wallets = try modelContext.fetch(descriptor)
+            let fetchedWallets = try modelContext.fetch(descriptor)
+
+            // Sort in memory: primary first, then by creation date
+            self.wallets = fetchedWallets.sorted { wallet1, wallet2 in
+                if wallet1.isPrimary != wallet2.isPrimary {
+                    return wallet1.isPrimary
+                }
+                return wallet1.createdAt < wallet2.createdAt
+            }
             self.primaryWallet = wallets.first { $0.isPrimary }
 
         } catch {
@@ -124,8 +133,9 @@ final class WalletService: ObservableObject {
         }
 
         // Update all wallets for this user
+        let userId = user.id
         let descriptor = FetchDescriptor<LocalWallet>(
-            predicate: #Predicate { $0.user?.id == user.id }
+            predicate: #Predicate { $0.userId == userId }
         )
         let allWallets = try modelContext.fetch(descriptor)
 
@@ -179,12 +189,13 @@ final class WalletService: ObservableObject {
             existingWallet.blockchain = walletResponse.blockchain
             existingWallet.accountType = walletResponse.accountType
             existingWallet.isPrimary = walletResponse.isPrimary
+            existingWallet.userId = user.id
             existingWallet.updatedAt = Date()
             try modelContext.save()
             return existingWallet
         } else {
             // Create new wallet
-            let newWallet = LocalWallet.from(walletResponse)
+            let newWallet = LocalWallet.from(walletResponse, userId: user.id)
             newWallet.user = user
             modelContext.insert(newWallet)
             try modelContext.save()

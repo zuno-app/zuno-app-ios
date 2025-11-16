@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Combine
 import AuthenticationServices
 
 /// ViewModel for authentication flows

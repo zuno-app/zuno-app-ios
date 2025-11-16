@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Combine
 
 /// Service for transaction management
 @MainActor
@@ -36,16 +37,17 @@ final class TransactionService: ObservableObject {
 
                 // Save to local database
                 for response in transactionResponses {
-                    try await saveTransaction(response, for: wallet)
+                    _ = try await saveTransaction(response, for: wallet)
                 }
             }
 
             // Load from local database
+            let walletId = wallet.id
             let descriptor = FetchDescriptor<LocalTransaction>(
-                predicate: #Predicate { $0.wallet?.id == wallet.id },
-                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+                predicate: #Predicate { $0.walletId == walletId }
             )
-            self.transactions = try modelContext.fetch(descriptor)
+            let fetchedTransactions = try modelContext.fetch(descriptor)
+            self.transactions = fetchedTransactions.sorted { $0.createdAt > $1.createdAt }
 
         } catch {
             print("Error loading transactions: \(error)")
@@ -63,25 +65,35 @@ final class TransactionService: ObservableObject {
                 let transactionResponses = try await APIClient.shared.getTransactions()
 
                 // Get all user's wallets
+                let userId = user.id
                 let walletDescriptor = FetchDescriptor<LocalWallet>(
-                    predicate: #Predicate { $0.user?.id == user.id }
+                    predicate: #Predicate { $0.userId == userId }
                 )
                 let wallets = try modelContext.fetch(walletDescriptor)
 
                 // Save transactions (matching by wallet if possible)
                 for response in transactionResponses {
                     if let wallet = wallets.first {
-                        try await saveTransaction(response, for: wallet)
+                        _ = try await saveTransaction(response, for: wallet)
                     }
                 }
             }
 
             // Load all transactions for user's wallets
-            let descriptor = FetchDescriptor<LocalTransaction>(
-                predicate: #Predicate { $0.wallet?.user?.id == user.id },
-                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            // First, get all wallet IDs for this user
+            let userId = user.id
+            let walletDescriptor = FetchDescriptor<LocalWallet>(
+                predicate: #Predicate { $0.userId == userId }
             )
-            self.transactions = try modelContext.fetch(descriptor)
+            let userWallets = try modelContext.fetch(walletDescriptor)
+            let walletIds = Set(userWallets.map { $0.id })
+
+            // Load all transactions and filter by wallet IDs
+            let allTransactionsDescriptor = FetchDescriptor<LocalTransaction>()
+            let allTransactions = try modelContext.fetch(allTransactionsDescriptor)
+            self.transactions = allTransactions
+                .filter { walletIds.contains($0.walletId) }
+                .sorted { $0.createdAt > $1.createdAt }
 
         } catch {
             print("Error loading all transactions: \(error)")
@@ -196,35 +208,30 @@ final class TransactionService: ObservableObject {
 
     /// Get recent transactions (last 20)
     func getRecentTransactions() async throws -> [LocalTransaction] {
-        let descriptor = FetchDescriptor<LocalTransaction>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
-        )
-        var allTransactions = try modelContext.fetch(descriptor)
+        let descriptor = FetchDescriptor<LocalTransaction>()
+        let allTransactions = try modelContext.fetch(descriptor)
+        let sortedTransactions = allTransactions.sorted { $0.createdAt > $1.createdAt }
 
         // Limit to 20
-        if allTransactions.count > 20 {
-            allTransactions = Array(allTransactions.prefix(20))
-        }
-
-        return allTransactions
+        return Array(sortedTransactions.prefix(20))
     }
 
     /// Get transactions filtered by status
     func getTransactions(status: TransactionStatus) async throws -> [LocalTransaction] {
         let descriptor = FetchDescriptor<LocalTransaction>(
-            predicate: #Predicate { $0.status == status },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            predicate: #Predicate { $0.status == status }
         )
-        return try modelContext.fetch(descriptor)
+        let fetchedTransactions = try modelContext.fetch(descriptor)
+        return fetchedTransactions.sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Get transactions filtered by type
     func getTransactions(type: TransactionType) async throws -> [LocalTransaction] {
         let descriptor = FetchDescriptor<LocalTransaction>(
-            predicate: #Predicate { $0.transactionType == type },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            predicate: #Predicate { $0.transactionType == type }
         )
-        return try modelContext.fetch(descriptor)
+        let fetchedTransactions = try modelContext.fetch(descriptor)
+        return fetchedTransactions.sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Get transactions for date range
@@ -232,18 +239,20 @@ final class TransactionService: ObservableObject {
         let descriptor = FetchDescriptor<LocalTransaction>(
             predicate: #Predicate { transaction in
                 transaction.createdAt >= startDate && transaction.createdAt <= endDate
-            },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            }
         )
-        return try modelContext.fetch(descriptor)
+        let fetchedTransactions = try modelContext.fetch(descriptor)
+        return fetchedTransactions.sorted { $0.createdAt > $1.createdAt }
     }
 
     // MARK: - Statistics
 
     /// Calculate total sent amount
     func getTotalSent(tokenSymbol: String? = nil) async throws -> Double {
+        let sendType = TransactionType.send
+        let confirmedStatus = TransactionStatus.confirmed
         let descriptor = FetchDescriptor<LocalTransaction>(
-            predicate: #Predicate { $0.transactionType == .send && $0.status == .confirmed }
+            predicate: #Predicate { $0.transactionType == sendType && $0.status == confirmedStatus }
         )
         let sentTransactions = try modelContext.fetch(descriptor)
 
@@ -262,8 +271,10 @@ final class TransactionService: ObservableObject {
 
     /// Calculate total received amount
     func getTotalReceived(tokenSymbol: String? = nil) async throws -> Double {
+        let receiveType = TransactionType.receive
+        let confirmedStatus = TransactionStatus.confirmed
         let descriptor = FetchDescriptor<LocalTransaction>(
-            predicate: #Predicate { $0.transactionType == .receive && $0.status == .confirmed }
+            predicate: #Predicate { $0.transactionType == receiveType && $0.status == confirmedStatus }
         )
         let receivedTransactions = try modelContext.fetch(descriptor)
 
@@ -303,12 +314,13 @@ final class TransactionService: ObservableObject {
             // Update existing transaction
             existingTransaction.status = TransactionStatus(rawValue: transactionResponse.status) ?? .pending
             existingTransaction.blockchainTxHash = transactionResponse.blockchainTxHash
+            existingTransaction.walletId = wallet.id
             existingTransaction.updatedAt = Date()
             try modelContext.save()
             return existingTransaction
         } else {
             // Create new transaction
-            let newTransaction = LocalTransaction.from(transactionResponse)
+            let newTransaction = LocalTransaction.from(transactionResponse, walletId: wallet.id)
             newTransaction.wallet = wallet
             modelContext.insert(newTransaction)
             try modelContext.save()
