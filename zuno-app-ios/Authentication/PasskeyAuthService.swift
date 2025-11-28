@@ -20,66 +20,97 @@ final class PasskeyAuthService: NSObject {
     /// - Parameters:
     ///   - zunoTag: The @zuno tag for the user
     ///   - displayName: User's display name
+    ///   - email: Optional email address
     ///   - window: The window to present the authentication UI
     /// - Returns: AuthResponse with tokens and user data
-    func register(zunoTag: String, displayName: String?, window: ASPresentationAnchor) async throws -> AuthResponse {
+    func register(zunoTag: String, displayName: String?, email: String? = nil, window: ASPresentationAnchor) async throws -> AuthResponse {
         self.authenticationAnchor = window
         print("🔐 [PasskeyAuth] Starting registration for zunoTag: \(zunoTag)")
 
-        // Step 1: Get registration challenge from backend
-        print("🔐 [PasskeyAuth] Step 1: Requesting challenge from backend...")
-        let challengeResponse: RegisterResponse = try await APIClient.shared.register(
-            zunoTag: zunoTag,
-            displayName: displayName
-        )
-        print("🔐 [PasskeyAuth] ✓ Received challenge response: challengeId=\(challengeResponse.challengeId)")
-        print("🔐 [PasskeyAuth] Options keys: \(challengeResponse.options.keys)")
+        do {
+            // Step 1: Get registration challenge from backend
+            print("🔐 [PasskeyAuth] Step 1: Requesting challenge from backend...")
+            let challengeResponse: RegisterResponse = try await APIClient.shared.register(
+                zunoTag: zunoTag,
+                displayName: displayName,
+                email: email
+            )
+            print("🔐 [PasskeyAuth] ✓ Received challenge response: challengeId=\(challengeResponse.challengeId)")
+            print("🔐 [PasskeyAuth] Options keys: \(challengeResponse.options.keys)")
 
-        // Step 2: Convert challenge options to platform credential request
-        let platformProvider = ASAuthorizationPlatformPublicKeyCredentialProvider(
-            relyingPartyIdentifier: Config.WebAuthn.relyingPartyID
-        )
+            // Step 2: Convert challenge options to platform credential request
+            let platformProvider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+                relyingPartyIdentifier: Config.WebAuthn.relyingPartyID
+            )
 
-        // Parse challenge data
-        let challengeString = extractBase64Challenge(from: challengeResponse.options)
-        print("🔐 [PasskeyAuth] Extracted challenge string: \(challengeString.isEmpty ? "EMPTY" : challengeString.prefix(20))...")
+            // Parse challenge data
+            let challengeString = extractBase64Challenge(from: challengeResponse.options)
+            print("🔐 [PasskeyAuth] Extracted challenge string: \(challengeString.isEmpty ? "EMPTY" : challengeString.prefix(20))...")
 
-        guard let challengeData = Data(base64Encoded: challengeString) else {
-            print("🔐 [PasskeyAuth] ❌ Failed to decode challenge from base64")
-            throw PasskeyError.invalidChallenge
+            guard let challengeData = Data(base64Encoded: challengeString) else {
+                print("🔐 [PasskeyAuth] ❌ Failed to decode challenge from base64")
+                throw PasskeyError.invalidChallenge
+            }
+            print("🔐 [PasskeyAuth] ✓ Challenge data decoded: \(challengeData.count) bytes")
+
+            let userIDData = extractUserID(from: challengeResponse.options)
+            print("🔐 [PasskeyAuth] Extracted userID data: \(userIDData.isEmpty ? "EMPTY" : "\(userIDData.count) bytes")")
+
+            let registrationRequest = platformProvider.createCredentialRegistrationRequest(
+                challenge: challengeData,
+                name: zunoTag,
+                userID: userIDData
+            )
+            print("🔐 [PasskeyAuth] ✓ Created registration request")
+
+            // Step 3: Present registration UI and get credential
+            print("🔐 [PasskeyAuth] Step 3: Presenting passkey registration UI...")
+            let credential = try await performRegistration(request: registrationRequest)
+            print("🔐 [PasskeyAuth] ✓ Received credential from user")
+
+            // Step 4: Send credential to backend to complete registration
+            print("🔐 [PasskeyAuth] Step 4: Completing registration with backend...")
+            let authResponse: AuthResponse = try await completeRegistration(
+                challengeId: challengeResponse.challengeId,
+                credential: credential
+            )
+            print("🔐 [PasskeyAuth] ✓ Registration completed successfully")
+
+            // Step 5: Store tokens in keychain
+            print("🔐 [PasskeyAuth] Step 5: Storing tokens in keychain...")
+            try KeychainManager.shared.save(authResponse.accessToken, forKey: Config.KeychainKeys.accessToken)
+            try KeychainManager.shared.save(authResponse.refreshToken, forKey: Config.KeychainKeys.refreshToken)
+            print("🔐 [PasskeyAuth] ✓ Tokens stored successfully")
+
+            return authResponse
+            
+        } catch let error as PasskeyError {
+            // Already a PasskeyError, just rethrow
+            print("🔐 [PasskeyAuth] ❌ PasskeyError: \(error.localizedDescription)")
+            throw error
+            
+        } catch let error as NetworkError {
+            // Convert NetworkError to PasskeyError
+            print("🔐 [PasskeyAuth] ❌ NetworkError: \(error.localizedDescription)")
+            switch error {
+            case .noConnection, .timeout:
+                throw PasskeyError.networkError(error.localizedDescription)
+            case .httpError(409):
+                // User already exists - suggest login instead
+                throw PasskeyError.userAlreadyExists
+            case .httpError(let code):
+                throw PasskeyError.serverError(code)
+            case .apiError(let apiError):
+                throw PasskeyError.registrationFailed(apiError.message)
+            default:
+                throw PasskeyError.registrationFailed(error.localizedDescription)
+            }
+            
+        } catch {
+            // Unknown error
+            print("🔐 [PasskeyAuth] ❌ Unknown error: \(error.localizedDescription)")
+            throw PasskeyError.unknownError(error.localizedDescription)
         }
-        print("🔐 [PasskeyAuth] ✓ Challenge data decoded: \(challengeData.count) bytes")
-
-        let userIDData = extractUserID(from: challengeResponse.options)
-        print("🔐 [PasskeyAuth] Extracted userID data: \(userIDData.isEmpty ? "EMPTY" : "\(userIDData.count) bytes")")
-
-        let registrationRequest = platformProvider.createCredentialRegistrationRequest(
-            challenge: challengeData,
-            name: zunoTag,
-            userID: userIDData
-        )
-        print("🔐 [PasskeyAuth] ✓ Created registration request")
-
-        // Step 3: Present registration UI and get credential
-        print("🔐 [PasskeyAuth] Step 3: Presenting passkey registration UI...")
-        let credential = try await performRegistration(request: registrationRequest)
-        print("🔐 [PasskeyAuth] ✓ Received credential from user")
-
-        // Step 4: Send credential to backend to complete registration
-        print("🔐 [PasskeyAuth] Step 4: Completing registration with backend...")
-        let authResponse: AuthResponse = try await completeRegistration(
-            challengeId: challengeResponse.challengeId,
-            credential: credential
-        )
-        print("🔐 [PasskeyAuth] ✓ Registration completed successfully")
-
-        // Step 5: Store tokens in keychain
-        print("🔐 [PasskeyAuth] Step 5: Storing tokens in keychain...")
-        try KeychainManager.shared.save(authResponse.accessToken, forKey: Config.KeychainKeys.accessToken)
-        try KeychainManager.shared.save(authResponse.refreshToken, forKey: Config.KeychainKeys.refreshToken)
-        print("🔐 [PasskeyAuth] ✓ Tokens stored successfully")
-
-        return authResponse
     }
 
     /// Perform passkey registration with ASAuthorizationController
@@ -101,18 +132,30 @@ final class PasskeyAuthService: NSObject {
         challengeId: String,
         credential: ASAuthorizationPlatformPublicKeyCredentialRegistration
     ) async throws -> AuthResponse {
-        let request = CompleteRegisterRequest(
-            challengeId: challengeId,
-            credential: CredentialRegistration(
-                id: credential.credentialID.base64EncodedString(),
-                rawId: credential.credentialID.base64EncodedString(),
-                response: AuthenticatorAttestationResponse(
-                    clientDataJSON: credential.rawClientDataJSON.base64EncodedString(),
-                    attestationObject: credential.rawAttestationObject?.base64EncodedString() ?? ""
-                ),
-                type: "public-key"
-            )
-        )
+        // Convert credential to WebAuthn standard format (exactly as webauthn-rs expects)
+        let credentialDict: [String: Any] = [
+            "id": credential.credentialID.base64URLEncodedString(),
+            "rawId": credential.credentialID.base64URLEncodedString(),
+            "response": [
+                "clientDataJSON": credential.rawClientDataJSON.base64URLEncodedString(),
+                "attestationObject": credential.rawAttestationObject?.base64URLEncodedString() ?? "",
+                "transports": [] // Optional but expected by some parsers
+            ] as [String : Any],
+            "type": "public-key",
+            "clientExtensionResults": [:] as [String: Any] // Required by WebAuthn spec
+        ]
+        
+        let request: [String: Any] = [
+            "challenge_id": challengeId,
+            "credential": credentialDict
+        ]
+        
+        // Debug: print what we're sending
+        if let jsonData = try? JSONSerialization.data(withJSONObject: request, options: .prettyPrinted),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            print("🔐 [PasskeyAuth] Sending to backend:")
+            print(jsonString)
+        }
 
         return try await APIClient.shared.post(
             Config.Endpoints.registerComplete,
@@ -185,17 +228,26 @@ final class PasskeyAuthService: NSObject {
         let request = CompleteLoginRequest(
             challengeId: challengeId,
             credential: CredentialAssertion(
-                id: assertion.credentialID.base64EncodedString(),
-                rawId: assertion.credentialID.base64EncodedString(),
+                id: assertion.credentialID.base64URLEncodedString(),
+                rawId: assertion.credentialID.base64URLEncodedString(),
                 response: AuthenticatorAssertionResponse(
-                    clientDataJSON: assertion.rawClientDataJSON.base64EncodedString(),
-                    authenticatorData: assertion.rawAuthenticatorData.base64EncodedString(),
-                    signature: assertion.signature.base64EncodedString(),
-                    userHandle: assertion.userID.base64EncodedString()
+                    clientDataJSON: assertion.rawClientDataJSON.base64URLEncodedString(),
+                    authenticatorData: assertion.rawAuthenticatorData.base64URLEncodedString(),
+                    signature: assertion.signature.base64URLEncodedString(),
+                    userHandle: assertion.userID.isEmpty ? nil : assertion.userID.base64URLEncodedString()
                 ),
                 type: "public-key"
             )
         )
+        
+        // Debug: print what we're sending
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let jsonData = try? encoder.encode(request),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            print("🔐 [PasskeyAuth] Sending login completion to backend:")
+            print(jsonString)
+        }
 
         return try await APIClient.shared.post(
             Config.Endpoints.loginComplete,
@@ -268,6 +320,19 @@ final class PasskeyAuthService: NSObject {
     }
 }
 
+// MARK: - Data Extension for Base64URL Encoding
+
+extension Data {
+    /// Encode data as base64url (URL-safe base64 without padding)
+    func base64URLEncodedString() -> String {
+        let base64 = self.base64EncodedString()
+        return base64
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
 // MARK: - ASAuthorizationControllerDelegate
 
 extension PasskeyAuthService: ASAuthorizationControllerDelegate {
@@ -296,8 +361,13 @@ extension PasskeyAuthService: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         print("🔐 [PasskeyAuth] Delegate: ❌ didCompleteWithError: \(error.localizedDescription)")
         print("🔐 [PasskeyAuth] Delegate: Error details: \(error)")
-        registrationContinuation?.resume(throwing: error)
-        authenticationContinuation?.resume(throwing: error)
+        
+        // Convert to PasskeyError for better error messages
+        let passkeyError = PasskeyError.from(authError: error)
+        print("🔐 [PasskeyAuth] Delegate: Converted to: \(passkeyError.localizedDescription)")
+        
+        registrationContinuation?.resume(throwing: passkeyError)
+        authenticationContinuation?.resume(throwing: passkeyError)
         registrationContinuation = nil
         authenticationContinuation = nil
     }
@@ -385,7 +455,7 @@ struct CompleteLoginRequest: Codable {
     let credential: CredentialAssertion
 
     enum CodingKeys: String, CodingKey {
-        case challengeId = "challenge_id"
+        case challengeId = "challenge_id"  // Backend expects snake_case
         case credential
     }
 }
@@ -395,12 +465,22 @@ struct CredentialAssertion: Codable {
     let rawId: String
     let response: AuthenticatorAssertionResponse
     let type: String
+    let clientExtensionResults: [String: String]
+    
+    init(id: String, rawId: String, response: AuthenticatorAssertionResponse, type: String) {
+        self.id = id
+        self.rawId = rawId
+        self.response = response
+        self.type = type
+        self.clientExtensionResults = [:]
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
-        case rawId = "raw_id"
+        case rawId
         case response
         case type
+        case clientExtensionResults
     }
 }
 
@@ -408,13 +488,13 @@ struct AuthenticatorAssertionResponse: Codable {
     let clientDataJSON: String
     let authenticatorData: String
     let signature: String
-    let userHandle: String
+    let userHandle: String?
 
     enum CodingKeys: String, CodingKey {
-        case clientDataJSON = "client_data_json"
-        case authenticatorData = "authenticator_data"
+        case clientDataJSON
+        case authenticatorData
         case signature
-        case userHandle = "user_handle"
+        case userHandle
     }
 }
 
@@ -425,6 +505,12 @@ enum PasskeyError: LocalizedError {
     case unsupportedCredentialType
     case registrationFailed(String)
     case authenticationFailed(String)
+    case userCanceled
+    case biometricFailed
+    case networkError(String)
+    case serverError(Int)
+    case userAlreadyExists
+    case unknownError(String)
 
     var errorDescription: String? {
         switch self {
@@ -436,6 +522,54 @@ enum PasskeyError: LocalizedError {
             return "Registration failed: \(reason)"
         case .authenticationFailed(let reason):
             return "Authentication failed: \(reason)"
+        case .userCanceled:
+            return "Authentication was canceled"
+        case .biometricFailed:
+            return "Biometric authentication failed. Please try again."
+        case .networkError(let message):
+            return "Network error: \(message)"
+        case .serverError(let code):
+            return "Server error (\(code)). Please try again later."
+        case .userAlreadyExists:
+            return "This @zuno tag is already registered"
+        case .unknownError(let message):
+            return "An error occurred: \(message)"
+        }
+    }
+    
+    var recoverySuggestion: String? {
+        switch self {
+        case .userCanceled:
+            return "Tap 'Register Passkey' to try again"
+        case .biometricFailed:
+            return "Make sure Face ID/Touch ID is enabled in Settings"
+        case .networkError:
+            return "Check your internet connection and try again"
+        case .serverError:
+            return "The server is experiencing issues. Please try again in a few moments."
+        case .invalidChallenge:
+            return "Please try registering again"
+        case .userAlreadyExists:
+            return "This account already exists. Please use the Login button to sign in with your passkey."
+        default:
+            return "Please try again or contact support if the problem persists"
+        }
+    }
+    
+    /// Convert ASAuthorization error to PasskeyError
+    static func from(authError: Error) -> PasskeyError {
+        let nsError = authError as NSError
+        
+        // ASAuthorizationError codes
+        switch nsError.code {
+        case 1001: // ASAuthorizationError.canceled
+            return .userCanceled
+        case 1004: // ASAuthorizationError.failed
+            return .biometricFailed
+        case 1000: // ASAuthorizationError.unknown
+            return .unknownError("Authentication system error")
+        default:
+            return .unknownError(authError.localizedDescription)
         }
     }
 }

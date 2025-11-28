@@ -5,7 +5,7 @@ enum Config {
     /// API base URL
     // Update this with your tunnel domain (Cloudflare, ngrok, or custom)
     // Use ./update-domain.sh to update automatically
-    static let apiBaseURL = "https://emotional-singing-auctions-genes.trycloudflare.com"
+    static let apiBaseURL = "https://phpbb-brilliant-entertainment-projects.trycloudflare.com"
 
     /// API endpoints
     enum Endpoints {
@@ -32,7 +32,7 @@ enum Config {
     enum WebAuthn {
         // Update this with your tunnel domain (without https://)
         // Use ./update-domain.sh to update automatically
-        static let relyingPartyID = "emotional-singing-auctions-genes.trycloudflare.com"
+        static let relyingPartyID = "phpbb-brilliant-entertainment-projects.trycloudflare.com"
         static let timeout: TimeInterval = 60
     }
 

@@ -16,28 +16,43 @@ final class WalletService: ObservableObject {
         self.modelContext = modelContext
     }
 
-    /// Set the current user and load their wallets
+    /// Set the current user
     func setCurrentUser(_ user: LocalUser) async {
         self.currentUser = user
-        await loadWallets()
+        // Wallets will be loaded separately by calling loadWallets()
+    }
+    
+    /// Clear all state (called when user logs out)
+    func clearState() {
+        print("🔄 [WalletService] Clearing state")
+        wallets = []
+        primaryWallet = nil
+        isLoading = false
+        currentUser = nil
     }
 
     // MARK: - Wallet Management
 
     /// Load wallets from local database and sync with API
     func loadWallets(forceRefresh: Bool = false) async {
-        guard let user = currentUser else { return }
+        guard let user = currentUser else {
+            print("⚠️ [WalletService] No current user set")
+            return
+        }
 
         isLoading = true
         defer { isLoading = false }
 
         do {
             if forceRefresh {
+                print("🔄 [WalletService] Fetching wallets from API...")
                 // Fetch from API
                 let walletResponses = try await APIClient.shared.listWallets()
+                print("✓ [WalletService] Received \(walletResponses.count) wallets from API")
 
                 // Save to local database
                 for response in walletResponses {
+                    print("💾 [WalletService] Saving wallet: \(response.walletAddress)")
                     _ = try await saveWallet(response, for: user)
                 }
             }
@@ -48,6 +63,7 @@ final class WalletService: ObservableObject {
                 predicate: #Predicate { $0.userId == userId }
             )
             let fetchedWallets = try modelContext.fetch(descriptor)
+            print("📱 [WalletService] Loaded \(fetchedWallets.count) wallets from local database")
 
             // Sort in memory: primary first, then by creation date
             self.wallets = fetchedWallets.sorted { wallet1, wallet2 in
@@ -57,9 +73,16 @@ final class WalletService: ObservableObject {
                 return wallet1.createdAt < wallet2.createdAt
             }
             self.primaryWallet = wallets.first { $0.isPrimary }
+            
+            if !wallets.isEmpty {
+                print("✅ [WalletService] Successfully loaded wallets. Primary: \(primaryWallet?.walletAddress ?? "none")")
+            } else {
+                print("⚠️ [WalletService] No wallets found")
+            }
 
         } catch {
-            print("Error loading wallets: \(error)")
+            print("❌ [WalletService] Error loading wallets: \(error)")
+            print("   Error details: \(error.localizedDescription)")
         }
     }
 
@@ -190,6 +213,16 @@ final class WalletService: ObservableObject {
             existingWallet.accountType = walletResponse.accountType
             existingWallet.isPrimary = walletResponse.isPrimary
             existingWallet.userId = user.id
+            
+            // Update balance if available
+            if let balance = walletResponse.balance {
+                existingWallet.balance = balance
+                if let balanceDouble = Double(balance) {
+                    existingWallet.balanceUSD = balanceDouble
+                }
+            }
+            
+            existingWallet.lastSyncedAt = Date()
             existingWallet.updatedAt = Date()
             try modelContext.save()
             return existingWallet
@@ -197,6 +230,15 @@ final class WalletService: ObservableObject {
             // Create new wallet
             let newWallet = LocalWallet.from(walletResponse, userId: user.id)
             newWallet.user = user
+            
+            // Set balance if available
+            if let balance = walletResponse.balance {
+                newWallet.balance = balance
+                if let balanceDouble = Double(balance) {
+                    newWallet.balanceUSD = balanceDouble
+                }
+            }
+            
             modelContext.insert(newWallet)
             try modelContext.save()
             return newWallet

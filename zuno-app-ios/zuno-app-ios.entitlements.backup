@@ -6,7 +6,7 @@
 	<array>
 		<!-- Update with your tunnel domain (Cloudflare, ngrok, or custom) -->
 		<!-- Use ./update-domain.sh to update automatically -->
-		<string>webcredentials:emotional-singing-auctions-genes.trycloudflare.com</string>
+		<string>webcredentials:phpbb-brilliant-entertainment-projects.trycloudflare.com</string>
 	</array>
 </dict>
 </plist>

@@ -121,6 +121,16 @@ struct ConfirmSendView: View {
                     value: transactionViewModel.transactionDescription
                 )
             }
+            
+            if !transactionViewModel.transactionCategory.isEmpty && transactionViewModel.transactionCategory != "None" {
+                Divider()
+
+                DetailRow(
+                    icon: "tag",
+                    title: "Category",
+                    value: transactionViewModel.transactionCategory
+                )
+            }
 
             Divider()
 
@@ -256,16 +266,32 @@ struct ConfirmSendView: View {
     // MARK: - Send Transaction
 
     private func sendTransaction() async {
+        // Prevent double-tap by checking if already sending
+        guard !isSending else {
+            print("⚠️ [ConfirmSendView] Already sending, ignoring duplicate tap")
+            return
+        }
+        
         guard let wallet = walletViewModel.primaryWallet else { return }
 
+        // Set isSending IMMEDIATELY before any async work
         isSending = true
+        print("🔒 [ConfirmSendView] Transaction started - button disabled")
 
         let success = await transactionViewModel.sendTransaction(blockchain: wallet.blockchain)
 
-        isSending = false
-
         if success {
+            print("✅ [ConfirmSendView] Transaction successful - showing success view")
             showSuccess = true
+            
+            // Refresh balance and transactions immediately after success
+            Task {
+                await walletViewModel.fetchAggregatedBalance()
+            }
+        } else {
+            // Only reset isSending if transaction failed (to allow retry)
+            print("❌ [ConfirmSendView] Transaction failed - allowing retry")
+            isSending = false
         }
     }
 }
@@ -301,20 +327,32 @@ struct DetailRow: View {
 
 // MARK: - Preview
 
-#Preview {
-    let modelContext = ModelContext(ModelContainer.preview)
-    let transactionViewModel = TransactionViewModel(modelContext: modelContext)
-    let walletViewModel = WalletViewModel(modelContext: modelContext)
+@available(iOS 17.0, *)
+struct ConfirmSendView_Previews: PreviewProvider {
+    static var previews: some View {
+        let schema = Schema([
+            LocalUser.self,
+            LocalWallet.self,
+            LocalTransaction.self,
+            CachedData.self,
+            AppSettings.self
+        ])
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [modelConfiguration])
+        let modelContext = container.mainContext
+        let transactionViewModel = TransactionViewModel(modelContext: modelContext)
+        let walletViewModel = WalletViewModel(modelContext: modelContext)
 
-    // Setup preview data
-    transactionViewModel.amount = "100"
-    transactionViewModel.tokenSymbol = "USDC"
-    transactionViewModel.recipientZunoTag = "alice"
-    transactionViewModel.useZunoTag = true
+        // Setup preview data
+        transactionViewModel.amount = "100"
+        transactionViewModel.tokenSymbol = "USDC"
+        transactionViewModel.recipientZunoTag = "alice"
+        transactionViewModel.useZunoTag = true
 
-    return ConfirmSendView(
-        transactionViewModel: transactionViewModel,
-        walletViewModel: walletViewModel,
-        onSuccess: {}
-    )
+        return ConfirmSendView(
+            transactionViewModel: transactionViewModel,
+            walletViewModel: walletViewModel,
+            onSuccess: {}
+        )
+    }
 }

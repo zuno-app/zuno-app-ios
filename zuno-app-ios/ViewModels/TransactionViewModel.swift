@@ -2,6 +2,8 @@ import Foundation
 import SwiftData
 import Combine
 
+// Note: ValidationResult is defined in AuthViewModel.swift and shared across ViewModels
+
 /// ViewModel for transaction management
 @MainActor
 final class TransactionViewModel: ObservableObject {
@@ -18,7 +20,12 @@ final class TransactionViewModel: ObservableObject {
     @Published var amount: String = ""
     @Published var tokenSymbol: String = "USDC"
     @Published var transactionDescription: String = ""
+    @Published var transactionCategory: String = ""
     @Published var useZunoTag: Bool = false
+    @Published var isSendingTransaction: Bool = false  // Prevent duplicate sends
+    
+    // Available tokens for sending (Arc supports both USDC and EURC)
+    let availableTokens = ["USDC", "EURC"]
 
     private let transactionService: TransactionService
     private let modelContext: ModelContext
@@ -98,6 +105,13 @@ final class TransactionViewModel: ObservableObject {
 
     // MARK: - Send Transaction
 
+    /// Parse amount string handling both comma and period as decimal separators
+    private func parseAmount(_ amountString: String) -> Double? {
+        // Handle both comma and period as decimal separators
+        let normalizedAmount = amountString.replacingOccurrences(of: ",", with: ".")
+        return Double(normalizedAmount)
+    }
+    
     /// Validate send transaction form
     func validateSendForm() -> ValidationResult {
         // Validate amount
@@ -105,7 +119,7 @@ final class TransactionViewModel: ObservableObject {
             return .invalid("Please enter an amount")
         }
 
-        guard let amountValue = Double(amount), amountValue > 0 else {
+        guard let amountValue = parseAmount(amount), amountValue > 0 else {
             return .invalid("Please enter a valid amount greater than zero")
         }
 
@@ -136,6 +150,12 @@ final class TransactionViewModel: ObservableObject {
 
     /// Send transaction
     func sendTransaction(blockchain: String) async -> Bool {
+        // CRITICAL: Prevent duplicate sends
+        guard !isSendingTransaction else {
+            print("⚠️ [TransactionViewModel] Already sending transaction, ignoring duplicate call")
+            return false
+        }
+        
         let validation = validateSendForm()
         guard validation.isValid else {
             self.errorMessage = validation.errorMessage
@@ -143,42 +163,61 @@ final class TransactionViewModel: ObservableObject {
             return false
         }
 
+        // Set flag IMMEDIATELY to prevent duplicates
+        isSendingTransaction = true
         isLoading = true
         errorMessage = nil
         showError = false
+        
+        print("🔒 [TransactionViewModel] Starting transaction - duplicate prevention enabled")
 
         do {
+            let description = transactionDescription.isEmpty ? nil : transactionDescription
+            let category = transactionCategory.isEmpty || transactionCategory == "None" ? nil : transactionCategory
+            
+            var newTransaction: LocalTransaction
+            
             if useZunoTag {
-                _ = try await transactionService.sendToZunoTag(
+                newTransaction = try await transactionService.sendToZunoTag(
                     toZunoTag: recipientZunoTag,
                     amount: amount,
                     tokenSymbol: tokenSymbol,
                     blockchain: blockchain,
-                    description: transactionDescription.isEmpty ? nil : transactionDescription
+                    description: description,
+                    category: category
                 )
             } else {
-                _ = try await transactionService.sendToAddress(
+                newTransaction = try await transactionService.sendToAddress(
                     toAddress: recipientAddress,
                     amount: amount,
                     tokenSymbol: tokenSymbol,
                     blockchain: blockchain,
-                    description: transactionDescription.isEmpty ? nil : transactionDescription
+                    description: description,
+                    category: category
                 )
             }
+            
+            print("✅ [TransactionViewModel] Transaction sent successfully: \(newTransaction.id)")
 
             // Clear form
             clearSendForm()
 
-            // Reload transactions
-            await loadTransactions()
+            // Immediately add the new transaction to the list (optimistic UI)
+            if !transactions.contains(where: { $0.id == newTransaction.id }) {
+                transactions.insert(newTransaction, at: 0)
+                recentTransactions = Array(transactions.prefix(20))
+            }
 
             isLoading = false
+            isSendingTransaction = false
             return true
 
         } catch {
+            print("❌ [TransactionViewModel] Transaction failed: \(error)")
             self.errorMessage = error.localizedDescription
             self.showError = true
             isLoading = false
+            isSendingTransaction = false
             return false
         }
     }
@@ -189,6 +228,8 @@ final class TransactionViewModel: ObservableObject {
         recipientZunoTag = ""
         amount = ""
         transactionDescription = ""
+        transactionCategory = ""
+        isSendingTransaction = false
     }
 
     // MARK: - Transaction Details

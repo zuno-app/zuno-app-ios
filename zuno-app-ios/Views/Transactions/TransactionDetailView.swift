@@ -1,4 +1,5 @@
 import SwiftUI
+import SafariServices
 
 /// Transaction detail/receipt view
 struct TransactionDetailView: View {
@@ -8,6 +9,8 @@ struct TransactionDetailView: View {
 
     @State private var showingShareSheet = false
     @State private var showCopiedToast = false
+    @State private var showingSafari = false
+    @State private var safariURL: URL?
 
     var body: some View {
         ZStack {
@@ -56,6 +59,11 @@ struct TransactionDetailView: View {
         }
         .sheet(isPresented: $showingShareSheet) {
             ShareSheet(items: [generateReceiptText()])
+        }
+        .sheet(isPresented: $showingSafari) {
+            if let url = safariURL {
+                SafariView(url: url)
+            }
         }
     }
 
@@ -300,6 +308,8 @@ struct TransactionDetailView: View {
         switch transaction.status {
         case .pending:
             return "clock"
+        case .confirming:
+            return "arrow.triangle.2.circlepath"
         case .confirmed:
             return transaction.isIncoming ? "arrow.down.circle.fill" : "arrow.up.circle.fill"
         case .failed:
@@ -311,7 +321,7 @@ struct TransactionDetailView: View {
 
     private var statusColor: Color {
         switch transaction.status {
-        case .pending: return .orange
+        case .pending, .confirming: return .orange
         case .confirmed: return .green
         case .failed, .cancelled: return .red
         }
@@ -324,6 +334,7 @@ struct TransactionDetailView: View {
     private var statusText: String {
         switch transaction.status {
         case .pending: return "Processing"
+        case .confirming: return "Confirming"
         case .confirmed: return "Completed"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
@@ -347,11 +358,51 @@ struct TransactionDetailView: View {
     }
 
     private func openBlockExplorer(txHash: String) {
-        // TODO: Implement block explorer URL based on blockchain
-        let explorerURL = "https://etherscan.io/tx/\(txHash)"
-        if let url = URL(string: explorerURL) {
-            UIApplication.shared.open(url)
-        }
+        guard let url = getBlockExplorerURL(txHash: txHash) else { return }
+        safariURL = url
+        showingSafari = true
+    }
+    
+    private func getBlockExplorerURL(txHash: String) -> URL? {
+        // Determine blockchain from transaction or use default
+        let blockchain = transaction.blockchain ?? "ARC_TESTNET"
+        
+        let explorerBase: String? = {
+            switch blockchain.uppercased() {
+            case let chain where chain.contains("ARC") && chain.contains("TESTNET"):
+                // Arc Testnet explorer
+                return "https://testnet.arcscan.app/tx"
+            case let chain where chain.contains("ARC"):
+                // Arc Mainnet explorer
+                return "https://arcscan.app/tx"
+            case let chain where chain.contains("ETH-SEPOLIA"):
+                return "https://sepolia.etherscan.io/tx"
+            case let chain where chain.contains("ETH"):
+                return "https://etherscan.io/tx"
+            case let chain where chain.contains("MATIC-AMOY"):
+                return "https://amoy.polygonscan.com/tx"
+            case let chain where chain.contains("MATIC"), let chain where chain.contains("POLYGON"):
+                return "https://polygonscan.com/tx"
+            case let chain where chain.contains("ARB-SEPOLIA"):
+                return "https://sepolia.arbiscan.io/tx"
+            case let chain where chain.contains("ARB"), let chain where chain.contains("ARBITRUM"):
+                return "https://arbiscan.io/tx"
+            case let chain where chain.contains("AVAX-FUJI"):
+                return "https://testnet.snowtrace.io/tx"
+            case let chain where chain.contains("AVAX"), let chain where chain.contains("AVALANCHE"):
+                return "https://snowtrace.io/tx"
+            case let chain where chain.contains("SOL-DEVNET"):
+                return "https://explorer.solana.com/tx"
+            case let chain where chain.contains("SOL"), let chain where chain.contains("SOLANA"):
+                return "https://explorer.solana.com/tx"
+            default:
+                // Fallback to Arc testnet for this project
+                return "https://testnet.arcscan.app/tx"
+            }
+        }()
+        
+        guard let base = explorerBase else { return nil }
+        return URL(string: "\(base)/\(txHash)")
     }
 
     private func generateReceiptText() -> String {
@@ -489,6 +540,24 @@ struct TimelineItem: View {
             )
         )
     }
+}
+
+// MARK: - Safari View
+
+struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+    
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.entersReaderIfAvailable = false
+        config.barCollapsingEnabled = true
+        
+        let safariVC = SFSafariViewController(url: url, configuration: config)
+        safariVC.preferredControlTintColor = .systemBlue
+        return safariVC
+    }
+    
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
 #Preview("Pending") {

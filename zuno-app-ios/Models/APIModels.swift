@@ -47,6 +47,7 @@ struct UserResponse: Codable {
     let displayName: String?
     let defaultCurrency: String?
     let preferredNetwork: String?
+    let preferredStablecoin: String?
     let isVerified: Bool
     let createdAt: Date
 
@@ -57,6 +58,7 @@ struct UserResponse: Codable {
         case displayName = "display_name"
         case defaultCurrency = "default_currency"
         case preferredNetwork = "preferred_network"
+        case preferredStablecoin = "preferred_stablecoin"
         case isVerified = "is_verified"
         case createdAt = "created_at"
     }
@@ -67,12 +69,14 @@ struct UpdateUserRequest: Codable {
     let displayName: String?
     let defaultCurrency: String?
     let preferredNetwork: String?
+    let preferredStablecoin: String?
 
     enum CodingKeys: String, CodingKey {
         case email
         case displayName = "display_name"
         case defaultCurrency = "default_currency"
         case preferredNetwork = "preferred_network"
+        case preferredStablecoin = "preferred_stablecoin"
     }
 }
 
@@ -96,6 +100,8 @@ struct WalletResponse: Codable, Identifiable {
     let blockchain: String
     let accountType: String
     let isPrimary: Bool
+    let balance: String?
+    let tokenSymbol: String?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -104,6 +110,8 @@ struct WalletResponse: Codable, Identifiable {
         case blockchain
         case accountType = "account_type"
         case isPrimary = "is_primary"
+        case balance
+        case tokenSymbol = "token_symbol"
         case createdAt = "created_at"
     }
 }
@@ -117,6 +125,7 @@ struct SendTransactionRequest: Codable {
     let tokenSymbol: String
     let blockchain: String
     let description: String?
+    let category: String?
 
     enum CodingKeys: String, CodingKey {
         case toAddress = "to_address"
@@ -125,11 +134,13 @@ struct SendTransactionRequest: Codable {
         case tokenSymbol = "token_symbol"
         case blockchain
         case description
+        case category
     }
 }
 
 struct TransactionResponse: Codable, Identifiable {
     let id: String
+    let walletId: String
     let transactionType: String
     let status: String
     let amount: String
@@ -142,6 +153,7 @@ struct TransactionResponse: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case walletId = "wallet_id"
         case transactionType = "transaction_type"
         case status
         case amount
@@ -166,6 +178,21 @@ struct ZunoTagLookupResponse: Codable {
         case displayName = "display_name"
         case primaryWalletAddress = "primary_wallet_address"
     }
+}
+
+struct ZunoTagAvailabilityResponse: Codable {
+    let available: Bool
+    let zunoTag: String
+
+    enum CodingKeys: String, CodingKey {
+        case available
+        case zunoTag = "zuno_tag"
+    }
+}
+
+struct EmailAvailabilityResponse: Codable {
+    let available: Bool
+    let email: String
 }
 
 // MARK: - Error Models
@@ -225,5 +252,128 @@ struct AnyCodable: Codable {
         default:
             try container.encodeNil()
         }
+    }
+}
+
+
+// MARK: - Balance Aggregation Models
+
+struct TokenBalanceInfo: Codable, Identifiable {
+    var id: String { "\(walletId)_\(tokenSymbol)" }
+    
+    let tokenSymbol: String
+    let amount: Double
+    let blockchain: String
+    let walletAddress: String
+    let walletId: String
+    let valueUsd: Double
+    let valueEur: Double
+    let valueGbp: Double
+    let valueUsdc: Double
+    let valueEurc: Double
+    let lastUpdated: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case tokenSymbol = "token_symbol"
+        case amount
+        case blockchain
+        case walletAddress = "wallet_address"
+        case walletId = "wallet_id"
+        case valueUsd = "value_usd"
+        case valueEur = "value_eur"
+        case valueGbp = "value_gbp"
+        case valueUsdc = "value_usdc"
+        case valueEurc = "value_eurc"
+        case lastUpdated = "last_updated"
+    }
+}
+
+struct AggregatedBalanceResponse: Codable {
+    let totalValueUsd: Double
+    let totalValueEur: Double
+    let totalValueGbp: Double
+    let totalValueUsdc: Double
+    let totalValueEurc: Double
+    let preferredFiat: String
+    let preferredStablecoin: String
+    let totalInPreferredFiat: Double
+    let totalInPreferredStablecoin: Double
+    let tokenBreakdown: [TokenBalanceInfo]
+    let lastUpdated: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case totalValueUsd = "total_value_usd"
+        case totalValueEur = "total_value_eur"
+        case totalValueGbp = "total_value_gbp"
+        case totalValueUsdc = "total_value_usdc"
+        case totalValueEurc = "total_value_eurc"
+        case preferredFiat = "preferred_fiat"
+        case preferredStablecoin = "preferred_stablecoin"
+        case totalInPreferredFiat = "total_in_preferred_fiat"
+        case totalInPreferredStablecoin = "total_in_preferred_stablecoin"
+        case tokenBreakdown = "token_breakdown"
+        case lastUpdated = "last_updated"
+    }
+}
+
+struct PriceConversionRequest: Codable {
+    let amount: Double
+    let fromCurrency: String
+    let toCurrency: String
+    
+    enum CodingKeys: String, CodingKey {
+        case amount
+        case fromCurrency = "from_currency"
+        case toCurrency = "to_currency"
+    }
+}
+
+struct PriceConversionResponse: Codable {
+    let fromCurrency: String
+    let toCurrency: String
+    let fromAmount: Double
+    let toAmount: Double
+    let exchangeRate: Double
+    let usdEurRate: Double
+    let timestamp: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case fromCurrency = "from_currency"
+        case toCurrency = "to_currency"
+        case fromAmount = "from_amount"
+        case toAmount = "to_amount"
+        case exchangeRate = "exchange_rate"
+        case usdEurRate = "usd_eur_rate"
+        case timestamp
+    }
+}
+
+struct ExchangeRatesResponse: Codable {
+    let usdEurRate: Double
+    let usdGbpRate: Double
+    let eurUsdRate: Double
+    let gbpUsdRate: Double
+    let tokens: [String: TokenPriceInfo]
+    let lastUpdated: String
+    
+    enum CodingKeys: String, CodingKey {
+        case usdEurRate = "usd_eur_rate"
+        case usdGbpRate = "usd_gbp_rate"
+        case eurUsdRate = "eur_usd_rate"
+        case gbpUsdRate = "gbp_usd_rate"
+        case tokens
+        case lastUpdated = "last_updated"
+    }
+}
+
+struct TokenPriceInfo: Codable {
+    let priceUsd: Double
+    let priceEur: Double
+    let priceGbp: Double
+    
+    enum CodingKeys: String, CodingKey {
+        case priceUsd = "price_usd"
+        case priceEur = "price_eur"
+        case priceGbp = "price_gbp"
     }
 }

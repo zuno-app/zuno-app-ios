@@ -44,6 +44,7 @@ final class AuthViewModel: ObservableObject {
         showError = false
 
         do {
+            print("📱 [AuthViewModel] Starting registration for @\(zunoTag)")
             let user = try await authService.register(
                 zunoTag: zunoTag,
                 displayName: displayName,
@@ -51,11 +52,30 @@ final class AuthViewModel: ObservableObject {
                 window: window
             )
 
-            self.currentUser = user
-            self.isAuthenticated = true
+            print("✅ [AuthViewModel] Registration successful")
+            print("✅ [AuthViewModel] User: \(user.zunoTag), ID: \(user.id)")
+            
+            // Update state on main actor
+            // Note: User will go through onboarding to create their first wallet
+            await MainActor.run {
+                self.currentUser = user
+                self.isAuthenticated = true
+                print("✅ [AuthViewModel] State updated - isAuthenticated: \(self.isAuthenticated), hasUser: \(self.currentUser != nil)")
+            }
 
+        } catch let error as PasskeyError {
+            print("❌ [AuthViewModel] PasskeyError: \(error.localizedDescription)")
+            // Build detailed error message with recovery suggestion
+            var message = error.localizedDescription
+            if let suggestion = error.recoverySuggestion {
+                message += "\n\n\(suggestion)"
+            }
+            self.errorMessage = message
+            self.showError = true
+            
         } catch {
-            self.errorMessage = error.localizedDescription
+            print("❌ [AuthViewModel] Unknown error: \(error.localizedDescription)")
+            self.errorMessage = "Registration failed: \(error.localizedDescription)"
             self.showError = true
         }
 
@@ -97,13 +117,26 @@ final class AuthViewModel: ObservableObject {
         showError = false
 
         do {
+            print("📱 [AuthViewModel] Starting login for @\(zunoTag)")
             let user = try await authService.login(zunoTag: zunoTag, window: window)
 
+            print("✅ [AuthViewModel] Login successful")
             self.currentUser = user
             self.isAuthenticated = true
 
+        } catch let error as PasskeyError {
+            print("❌ [AuthViewModel] PasskeyError: \(error.localizedDescription)")
+            // Build detailed error message with recovery suggestion
+            var message = error.localizedDescription
+            if let suggestion = error.recoverySuggestion {
+                message += "\n\n\(suggestion)"
+            }
+            self.errorMessage = message
+            self.showError = true
+            
         } catch {
-            self.errorMessage = error.localizedDescription
+            print("❌ [AuthViewModel] Unknown error: \(error.localizedDescription)")
+            self.errorMessage = "Login failed: \(error.localizedDescription)"
             self.showError = true
         }
 
@@ -145,7 +178,7 @@ final class AuthViewModel: ObservableObject {
     // MARK: - Profile Management
 
     /// Update user profile
-    func updateProfile(email: String? = nil, displayName: String? = nil, defaultCurrency: String? = nil, preferredNetwork: String? = nil) async {
+    func updateProfile(email: String? = nil, displayName: String? = nil, defaultCurrency: String? = nil, preferredNetwork: String? = nil, preferredStablecoin: String? = nil) async {
         isLoading = true
         errorMessage = nil
         showError = false
@@ -155,7 +188,8 @@ final class AuthViewModel: ObservableObject {
                 email: email,
                 displayName: displayName,
                 defaultCurrency: defaultCurrency,
-                preferredNetwork: preferredNetwork
+                preferredNetwork: preferredNetwork,
+                preferredStablecoin: preferredStablecoin
             )
 
             self.currentUser = updatedUser

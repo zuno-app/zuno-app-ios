@@ -35,9 +35,12 @@ final class TransactionService: ObservableObject {
                 // Fetch from API
                 let transactionResponses = try await APIClient.shared.getTransactions()
 
-                // Save to local database
+                // Save to local database using wallet_id from API response
                 for response in transactionResponses {
-                    _ = try await saveTransaction(response, for: wallet)
+                    // Only save transactions that belong to this wallet
+                    if response.walletId == wallet.id {
+                        _ = try await saveTransaction(response, for: wallet)
+                    }
                 }
             }
 
@@ -70,10 +73,11 @@ final class TransactionService: ObservableObject {
                     predicate: #Predicate { $0.userId == userId }
                 )
                 let wallets = try modelContext.fetch(walletDescriptor)
+                let walletMap = Dictionary(uniqueKeysWithValues: wallets.map { ($0.id, $0) })
 
-                // Save transactions (matching by wallet if possible)
+                // Save transactions to their correct wallets using wallet_id from API
                 for response in transactionResponses {
-                    if let wallet = wallets.first {
+                    if let wallet = walletMap[response.walletId] {
                         _ = try await saveTransaction(response, for: wallet)
                     }
                 }
@@ -102,13 +106,26 @@ final class TransactionService: ObservableObject {
 
     // MARK: - Send Transaction
 
+    /// Parse amount string handling both comma and period as decimal separators
+    private func parseAmount(_ amountString: String) -> Double? {
+        // Handle both comma and period as decimal separators
+        let normalizedAmount = amountString.replacingOccurrences(of: ",", with: ".")
+        return Double(normalizedAmount)
+    }
+    
+    /// Normalize amount string to use period as decimal separator (for API)
+    private func normalizeAmount(_ amountString: String) -> String {
+        return amountString.replacingOccurrences(of: ",", with: ".")
+    }
+    
     /// Send transaction to address
     func sendToAddress(
         toAddress: String,
         amount: String,
         tokenSymbol: String,
         blockchain: String,
-        description: String? = nil
+        description: String? = nil,
+        category: String? = nil
     ) async throws -> LocalTransaction {
         guard let wallet = currentWallet else {
             throw TransactionError.noCurrentWallet
@@ -117,18 +134,23 @@ final class TransactionService: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        // Validate amount
-        guard let amountValue = Double(amount), amountValue > 0 else {
+        // Validate amount (handle comma as decimal separator)
+        guard let amountValue = parseAmount(amount), amountValue > 0 else {
             throw TransactionError.invalidAmount
         }
+        
+        // Normalize amount for API (use period as decimal separator)
+        let normalizedAmount = normalizeAmount(amount)
 
         // Send transaction via API
         let transactionResponse = try await APIClient.shared.sendTransaction(
             toAddress: toAddress,
             toZunoTag: nil,
-            amount: amount,
+            amount: normalizedAmount,
             tokenSymbol: tokenSymbol,
-            blockchain: blockchain
+            blockchain: blockchain,
+            description: description,
+            category: category
         )
 
         // Save to local database
@@ -146,7 +168,8 @@ final class TransactionService: ObservableObject {
         amount: String,
         tokenSymbol: String,
         blockchain: String,
-        description: String? = nil
+        description: String? = nil,
+        category: String? = nil
     ) async throws -> LocalTransaction {
         guard let wallet = currentWallet else {
             throw TransactionError.noCurrentWallet
@@ -155,10 +178,13 @@ final class TransactionService: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        // Validate amount
-        guard let amountValue = Double(amount), amountValue > 0 else {
+        // Validate amount (handle comma as decimal separator)
+        guard let amountValue = parseAmount(amount), amountValue > 0 else {
             throw TransactionError.invalidAmount
         }
+        
+        // Normalize amount for API (use period as decimal separator)
+        let normalizedAmount = normalizeAmount(amount)
 
         // Remove @ prefix if present
         let cleanTag = toZunoTag.hasPrefix("@") ? String(toZunoTag.dropFirst()) : toZunoTag
@@ -167,9 +193,11 @@ final class TransactionService: ObservableObject {
         let transactionResponse = try await APIClient.shared.sendTransaction(
             toAddress: nil,
             toZunoTag: cleanTag,
-            amount: amount,
+            amount: normalizedAmount,
             tokenSymbol: tokenSymbol,
-            blockchain: blockchain
+            blockchain: blockchain,
+            description: description,
+            category: category
         )
 
         // Save to local database

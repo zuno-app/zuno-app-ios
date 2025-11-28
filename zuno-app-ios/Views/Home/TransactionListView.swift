@@ -194,8 +194,14 @@ struct FilterPill: View {
 
 // MARK: - Preview
 
-#Preview {
-    NavigationStack {
-        TransactionListView(modelContext: ModelContext(ModelContainer.preview))
+@available(iOS 17.0, *)
+struct TransactionListView_Previews: PreviewProvider {
+    static var previews: some View {
+        let schema = Schema([LocalUser.self, LocalWallet.self, LocalTransaction.self, CachedData.self, AppSettings.self])
+        let container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+        
+        NavigationStack {
+            TransactionListView(modelContext: container.mainContext)
+        }
     }
 }

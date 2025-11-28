@@ -1,21 +1,26 @@
 import SwiftUI
 import SwiftData
+import Combine
 
 /// Home dashboard - main screen after login
 struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var authViewModel: AuthViewModel
-    @StateObject private var walletViewModel: WalletViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var authViewModel: AuthViewModel
+    @EnvironmentObject private var walletViewModel: WalletViewModel
     @StateObject private var transactionViewModel: TransactionViewModel
 
     @State private var showingSend = false
     @State private var showingReceive = false
     @State private var showingSettings = false
+    @State private var showingProfile = false
+    @State private var showingBalanceDistribution = false
     @State private var isRefreshing = false
+    
+    // Fast auto-refresh timer for near real-time updates (5 seconds)
+    private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     init(modelContext: ModelContext) {
-        _authViewModel = StateObject(wrappedValue: AuthViewModel(modelContext: modelContext))
-        _walletViewModel = StateObject(wrappedValue: WalletViewModel(modelContext: modelContext))
         _transactionViewModel = StateObject(wrappedValue: TransactionViewModel(modelContext: modelContext))
     }
 
@@ -61,59 +66,165 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showingSend) {
-                SendView(modelContext: modelContext)
+                SendView(modelContext: modelContext, preselectedWallet: walletViewModel.primaryWallet)
+                    .environmentObject(authViewModel)
+                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showingReceive) {
                 ReceiveView(wallet: walletViewModel.primaryWallet)
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(modelContext: modelContext)
+                    .environmentObject(authViewModel)
+                    .presentationDragIndicator(.visible)
+                    .presentationDetents([.large])
+            }
+            .sheet(isPresented: $showingProfile) {
+                if let user = authViewModel.currentUser {
+                    UserProfileView(
+                        user: user,
+                        walletCount: walletViewModel.wallets.count,
+                        totalBalance: walletViewModel.getFormattedTotalBalance(),
+                        modelContext: modelContext
+                    )
+                    .presentationDragIndicator(.visible)
+                    .presentationDetents([.large])
+                }
+            }
+            .sheet(isPresented: $showingBalanceDistribution) {
+                BalanceDistributionView()
+                    .environmentObject(authViewModel)
+                    .environmentObject(walletViewModel)
+                    .presentationDragIndicator(.visible)
+                    .presentationDetents([.large])
             }
             .task {
                 await setupView()
             }
+            .onReceive(refreshTimer) { _ in
+                // Auto-refresh balance and transactions every 5 seconds for near real-time
+                Task {
+                    await autoRefresh()
+                }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                // Refresh immediately when app comes to foreground
+                if newPhase == .active {
+                    print("📱 [HomeView] App became active - refreshing data")
+                    Task {
+                        await refreshData()
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .transactionReceived)) { notification in
+                if let event = notification.object as? TransactionEvent {
+                    showTransactionNotification(event)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Auto Refresh (Silent)
+    
+    private func autoRefresh() async {
+        // Silent refresh - don't show loading indicators
+        // This runs every 5 seconds for near real-time updates
+        await walletViewModel.fetchAggregatedBalance()
+        await transactionViewModel.refreshAllTransactions()
+    }
+    
+    // MARK: - Real-Time Transaction Notifications
+    
+    private func showTransactionNotification(_ event: TransactionEvent) {
+        let isIncoming = event.transactionType == "receive"
+        let symbol = event.tokenSymbol
+        let amount = event.amount
+        
+        print("🔔 [HomeView] \(isIncoming ? "💰 Received" : "💸 Sent"): \(amount) \(symbol)")
+        
+        // Haptic feedback for new transactions
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        // Refresh data immediately
+        Task {
+            await walletViewModel.fetchAggregatedBalance()
+            await transactionViewModel.refreshAllTransactions()
         }
     }
 
     // MARK: - Balance Card
 
     private var balanceCard: some View {
-        VStack(spacing: 16) {
-            // Total Balance
-            VStack(spacing: 8) {
-                Text("Total Balance")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+        Button {
+            showingBalanceDistribution = true
+        } label: {
+            VStack(spacing: 16) {
+                // Total Balance
+                VStack(spacing: 8) {
+                    Text("Total Balance")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
 
-                Text(walletViewModel.getFormattedTotalBalance())
-                    .font(.system(size: 48, weight: .bold))
-                    .foregroundStyle(.primary)
-            }
-
-            // Primary Wallet Info
-            if let primaryWallet = walletViewModel.primaryWallet {
-                VStack(spacing: 4) {
-                    Text(primaryWallet.blockchainDisplayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Text(primaryWallet.shortAddress)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(walletViewModel.getFormattedTotalBalance())
+                        .font(.system(size: 48, weight: .bold))
+                        .foregroundStyle(.white)
+                    
+                    // Preferred Stablecoin indicator
+                    if authViewModel.currentUser != nil {
+                        HStack(spacing: 4) {
+                            Image(systemName: "dollarsign.circle.fill")
+                                .font(.caption2)
+                            Text("Preferred: \(walletViewModel.getPreferredStablecoin())")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.white.opacity(0.7))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 4)
-                        .background(Color(.tertiarySystemBackground))
-                        .cornerRadius(8)
+                        .background(Color.white.opacity(0.2))
+                        .cornerRadius(12)
+                    }
                 }
+
+                // Primary Wallet Info
+                if let primaryWallet = walletViewModel.primaryWallet {
+                    VStack(spacing: 4) {
+                        Text(primaryWallet.blockchainDisplayName)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+
+                        Text(primaryWallet.shortAddress)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.15))
+                            .cornerRadius(8)
+                    }
+                }
+                
+                // Tap hint
+                HStack(spacing: 4) {
+                    Text("Tap for details")
+                        .font(.caption2)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.white.opacity(0.5))
             }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 32)
-        .background(
-            LinearGradient(
-                colors: [Color.blue.opacity(0.6), Color.purple.opacity(0.6)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 32)
+            .background(
+                LinearGradient(
+                    colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.8)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             )
-        )
-        .cornerRadius(20)
+            .cornerRadius(20)
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal)
     }
 
@@ -166,6 +277,11 @@ struct HomeView: View {
 
                 Spacer()
 
+                if transactionViewModel.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+
                 NavigationLink {
                     TransactionListView(modelContext: modelContext)
                 } label: {
@@ -176,7 +292,9 @@ struct HomeView: View {
             }
             .padding(.horizontal)
 
-            if transactionViewModel.recentTransactions.isEmpty {
+            if transactionViewModel.isLoading && transactionViewModel.recentTransactions.isEmpty {
+                loadingTransactionsView
+            } else if transactionViewModel.recentTransactions.isEmpty {
                 emptyTransactionsView
             } else {
                 VStack(spacing: 0) {
@@ -187,6 +305,7 @@ struct HomeView: View {
                             TransactionRow(transaction: transaction)
                         }
                         .buttonStyle(.plain)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
 
                         if transaction.id != transactionViewModel.recentTransactions.prefix(5).last?.id {
                             Divider()
@@ -199,6 +318,21 @@ struct HomeView: View {
                 .padding(.horizontal)
             }
         }
+        .animation(.easeInOut(duration: 0.3), value: transactionViewModel.recentTransactions.count)
+    }
+    
+    private var loadingTransactionsView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+            Text("Loading transactions...")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+        .padding(.horizontal)
     }
 
     private var emptyTransactionsView: some View {
@@ -232,25 +366,85 @@ struct HomeView: View {
 
                 Spacer()
 
+                if walletViewModel.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+
                 Button {
-                    // TODO: Add wallet
+                    Task {
+                        await walletViewModel.createWallet(blockchain: "ARC_TESTNET", name: "My Wallet")
+                    }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .foregroundStyle(.blue)
                 }
+                .disabled(walletViewModel.isLoading)
             }
             .padding(.horizontal)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(walletViewModel.wallets) { wallet in
-                        WalletCard(wallet: wallet, isSelected: wallet.id == walletViewModel.selectedWallet?.id)
-                            .onTapGesture {
-                                walletViewModel.selectWallet(wallet)
-                            }
-                    }
+            if walletViewModel.isLoading && walletViewModel.wallets.isEmpty {
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("Creating wallet...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
                 .padding(.horizontal)
+            } else if walletViewModel.wallets.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "wallet.pass")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    
+                    Text("No wallets yet")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    
+                    Button {
+                        Task {
+                            await walletViewModel.createWallet(blockchain: "ARC_TESTNET", name: "My First Wallet")
+                        }
+                    } label: {
+                        Label("Create Wallet", systemImage: "plus.circle.fill")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(walletViewModel.isLoading)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
+                .padding(.horizontal)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(walletViewModel.wallets) { wallet in
+                            NavigationLink {
+                                WalletDetailView(wallet: wallet)
+                                    .environmentObject(walletViewModel)
+                            } label: {
+                                WalletCard(
+                                    wallet: wallet,
+                                    isSelected: wallet.id == walletViewModel.selectedWallet?.id,
+                                    balanceInfo: walletViewModel.getFormattedBalanceForWallet(wallet)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .simultaneousGesture(TapGesture().onEnded {
+                                walletViewModel.selectWallet(wallet)
+                            })
+                            .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: walletViewModel.wallets.count)
             }
         }
     }
@@ -258,34 +452,33 @@ struct HomeView: View {
     // MARK: - User Profile Button
 
     private var userProfileButton: some View {
-        HStack(spacing: 8) {
+        Button {
+            showingProfile = true
+        } label: {
             Image(systemName: "person.circle.fill")
                 .font(.title2)
                 .foregroundStyle(.blue)
-
-            if let user = authViewModel.currentUser {
-                VStack(alignment: .leading, spacing: 2) {
-                    if let displayName = user.displayName {
-                        Text(displayName)
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                    }
-                    Text("@\(user.zunoTag)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
     }
 
     // MARK: - Setup and Refresh
 
     private func setupView() async {
-        if let user = authViewModel.currentUser {
-            await walletViewModel.setCurrentUser(user)
-            await transactionViewModel.setCurrentUser(user)
-            await transactionViewModel.loadAllTransactions()
+        print("✅ [HomeView] HomeView appeared for user: \(authViewModel.currentUser?.zunoTag ?? "unknown")")
+        print("📊 [HomeView] Wallets already loaded: \(walletViewModel.wallets.count)")
+        
+        guard let user = authViewModel.currentUser else {
+            print("⚠️ [HomeView] No user found - this shouldn't happen")
+            return
         }
+        
+        // WalletViewModel is already set up from AuthenticatedView
+        // Just set up transaction view model
+        await transactionViewModel.setCurrentUser(user)
+        await transactionViewModel.loadAllTransactions()
+        
+        // Fetch aggregated balance for accurate display
+        await walletViewModel.fetchAggregatedBalance()
     }
 
     private func refreshData() async {
@@ -331,10 +524,11 @@ struct QuickActionButton: View {
 
 struct TransactionRow: View {
     let transaction: LocalTransaction
+    @State private var isPressed = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Icon
+            // Icon with animation
             ZStack {
                 Circle()
                     .fill(iconBackgroundColor)
@@ -344,16 +538,18 @@ struct TransactionRow: View {
                     .font(.system(size: 18))
                     .foregroundStyle(iconColor)
             }
+            .scaleEffect(isPressed ? 0.95 : 1.0)
 
             // Details
             VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.transactionType.displayName)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
 
                 Text(transaction.recipientDisplay)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
                 Text(transaction.createdAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption2)
@@ -364,13 +560,18 @@ struct TransactionRow: View {
 
             // Amount and status
             VStack(alignment: .trailing, spacing: 4) {
-                Text("\(transaction.isIncoming ? "+" : "-")\(transaction.amount) \(transaction.tokenSymbol)")
+                Text("\(transaction.isIncoming ? "+" : "-")\(formatAmount(transaction.amount)) \(transaction.tokenSymbol)")
                     .font(.subheadline.bold())
                     .foregroundStyle(transaction.isIncoming ? .green : .primary)
 
                 HStack(spacing: 4) {
-                    Image(systemName: transaction.statusIcon)
-                        .font(.caption2)
+                    if transaction.status == .pending || transaction.status == .confirming {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: transaction.statusIcon)
+                            .font(.caption2)
+                    }
                     Text(transaction.status.displayName)
                         .font(.caption2)
                 }
@@ -378,6 +579,12 @@ struct TransactionRow: View {
             }
         }
         .padding()
+        .contentShape(Rectangle())
+        .scaleEffect(isPressed ? 0.98 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isPressed)
+        .onLongPressGesture(minimumDuration: .infinity, maximumDistance: .infinity, pressing: { pressing in
+            isPressed = pressing
+        }, perform: {})
     }
 
     private var iconColor: Color {
@@ -391,8 +598,36 @@ struct TransactionRow: View {
     private var statusColor: Color {
         switch transaction.status {
         case .pending: return .orange
+        case .confirming: return .orange
         case .confirmed: return .green
         case .failed, .cancelled: return .red
+        }
+    }
+    
+    /// Format amount for display - removes excessive decimals and handles large numbers
+    private func formatAmount(_ amount: String) -> String {
+        // Handle both comma and period as decimal separators
+        let normalizedAmount = amount.replacingOccurrences(of: ",", with: ".")
+        
+        guard let value = Double(normalizedAmount) else {
+            return amount
+        }
+        
+        // Format based on value size
+        if value == 0 {
+            return "0"
+        } else if value >= 1000 {
+            // Large amounts: no decimals
+            return String(format: "%.0f", value)
+        } else if value >= 1 {
+            // Normal amounts: 2 decimals
+            return String(format: "%.2f", value)
+        } else if value >= 0.01 {
+            // Small amounts: 2 decimals
+            return String(format: "%.2f", value)
+        } else {
+            // Very small amounts: up to 4 decimals
+            return String(format: "%.4f", value)
         }
     }
 }
@@ -402,12 +637,20 @@ struct TransactionRow: View {
 struct WalletCard: View {
     let wallet: LocalWallet
     let isSelected: Bool
+    let balanceInfo: (amount: String, symbol: String, fiatValue: String)?
+    @State private var isPressed = false
+    
+    init(wallet: LocalWallet, isSelected: Bool, balanceInfo: (amount: String, symbol: String, fiatValue: String)? = nil) {
+        self.wallet = wallet
+        self.isSelected = isSelected
+        self.balanceInfo = balanceInfo
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(wallet.blockchainDisplayName)
-                    .font(.caption)
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
 
                 Spacer()
@@ -416,36 +659,55 @@ struct WalletCard: View {
                     Image(systemName: "star.fill")
                         .font(.caption)
                         .foregroundStyle(.yellow)
+                        .shadow(color: .yellow.opacity(0.3), radius: 2)
                 }
             }
 
-            if let balance = wallet.balance {
-                Text("\(balance) \(wallet.blockchain.contains("USDC") ? "USDC" : "ETH")")
-                    .font(.headline)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(balanceInfo?.amount ?? wallet.balance ?? "0")
+                    .font(.title3.bold())
                     .foregroundStyle(.primary)
-            } else {
-                Text("Loading...")
-                    .font(.headline)
+                Text(balanceInfo?.symbol ?? wallet.tokenSymbol)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Text(wallet.shortAddress)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .frame(width: 160)
         .padding()
-        .background(isSelected ? Color.blue.opacity(0.1) : Color(.secondarySystemBackground))
-        .cornerRadius(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(isSelected ? Color.blue.opacity(0.1) : Color(.secondarySystemBackground))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
         )
+        .shadow(color: isSelected ? Color.blue.opacity(0.2) : Color.clear, radius: 8)
+        .scaleEffect(isPressed ? 0.95 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isPressed)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+        .onLongPressGesture(minimumDuration: .infinity, maximumDistance: .infinity, pressing: { pressing in
+            isPressed = pressing
+        }, perform: {})
     }
 }
 
 // MARK: - Preview
 
-#Preview {
-    HomeView(modelContext: ModelContext(ModelContainer.preview))
+@available(iOS 17.0, *)
+struct HomeView_Previews: PreviewProvider {
+    static var previews: some View {
+        let schema = Schema([LocalUser.self, LocalWallet.self, LocalTransaction.self, CachedData.self, AppSettings.self])
+        let container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        
+        HomeView(modelContext: context)
+            .environmentObject(AuthViewModel(modelContext: context))
+            .environmentObject(WalletViewModel(modelContext: context))
+    }
 }

@@ -6,7 +6,7 @@ import AuthenticationServices
 struct PasskeySetupView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var authViewModel: AuthViewModel
+    @EnvironmentObject private var authViewModel: AuthViewModel
 
     let zunoTag: String
     let displayName: String?
@@ -17,14 +17,9 @@ struct PasskeySetupView: View {
     @State private var showSuccess = false
     @State private var showError = false
     @State private var errorMessage: String?
-
-    init(zunoTag: String, displayName: String?, email: String?, isRegistration: Bool) {
-        self.zunoTag = zunoTag
-        self.displayName = displayName
-        self.email = email
-        self.isRegistration = isRegistration
-        _authViewModel = StateObject(wrappedValue: AuthViewModel(modelContext: ModelContext(ModelContainer.preview)))
-    }
+    @State private var isUserAlreadyExists = false
+    @State private var passkeyName: String = ""
+    @FocusState private var isNameFieldFocused: Bool
 
     var body: some View {
         ZStack {
@@ -58,6 +53,23 @@ struct PasskeySetupView: View {
                 }
 
                 Spacer()
+
+                // Passkey name input (optional)
+                if isRegistration {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Name Your Passkey (Optional)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 32)
+                        
+                        TextField("e.g., My iPhone, Work Phone", text: $passkeyName)
+                            .textFieldStyle(.roundedBorder)
+                            .padding(.horizontal, 32)
+                            .focused($isNameFieldFocused)
+                            .submitLabel(.done)
+                            .autocorrectionDisabled()
+                    }
+                }
 
                 // Info cards
                 VStack(spacing: 16) {
@@ -118,7 +130,8 @@ struct PasskeySetupView: View {
                 .padding(.bottom, 40)
             }
         }
-        .navigationBarBackButtonHidden(isAuthenticating)
+        .navigationBarBackButtonHidden(isAuthenticating || showError)
+        .interactiveDismissDisabled(showError)
         .alert("Success", isPresented: $showSuccess) {
             Button("Continue") {
                 // Navigation will be handled by AuthViewModel state change
@@ -127,16 +140,30 @@ struct PasskeySetupView: View {
             Text(isRegistration ? "Your wallet has been created!" : "Welcome back!")
         }
         .alert("Error", isPresented: $showError) {
-            Button("Try Again") {
-                errorMessage = nil
-                showError = false
-            }
-            Button("Cancel", role: .cancel) {
-                dismiss()
+            // Show "Login Instead" button if user already exists
+            if errorMessage?.contains("already registered") == true {
+                Button("Login Instead") {
+                    // Navigate to login with the same zuno tag
+                    dismiss()
+                    // The WelcomeView will handle showing login
+                }
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+            } else {
+                Button("Try Again") {
+                    errorMessage = nil
+                    showError = false
+                }
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
             }
         } message: {
             if let error = errorMessage {
                 Text(error)
+            } else {
+                Text("An error occurred during authentication")
             }
         }
     }
@@ -150,16 +177,25 @@ struct PasskeySetupView: View {
 
     private func handleAuthentication() {
         isAuthenticating = true
+        errorMessage = nil
+        showError = false
 
         Task {
             do {
                 // Get the window for presenting passkey UI
                 guard let window = await getWindow() else {
+                    print("❌ [PasskeySetup] Could not get window")
                     throw PasskeyError.registrationFailed("Could not get window")
                 }
 
+                print("🔐 [PasskeySetup] Starting \(isRegistration ? "registration" : "login") for @\(zunoTag)")
+
                 if isRegistration {
                     // Register new user
+                    // Use passkey name if provided, otherwise use device name
+                    let deviceName = passkeyName.isEmpty ? UIDevice.current.name : passkeyName
+                    print("🔐 [PasskeySetup] Using device name: \(deviceName)")
+                    
                     await authViewModel.register(
                         zunoTag: zunoTag,
                         displayName: displayName,
@@ -174,16 +210,55 @@ struct PasskeySetupView: View {
                     )
                 }
 
+                // Check if authentication succeeded
                 if authViewModel.isAuthenticated {
-                    showSuccess = true
+                    print("✅ [PasskeySetup] Authentication successful")
+                    await MainActor.run {
+                        showSuccess = true
+                    }
+                } else {
+                    // Authentication failed - check if ViewModel has error
+                    print("⚠️ [PasskeySetup] Authentication failed")
+                    await MainActor.run {
+                        if let viewModelError = authViewModel.errorMessage {
+                            print("⚠️ [PasskeySetup] Using ViewModel error: \(viewModelError)")
+                            errorMessage = viewModelError
+                            showError = true
+                        } else {
+                            print("⚠️ [PasskeySetup] No error message from ViewModel")
+                            errorMessage = "Authentication failed. Please try again."
+                            showError = true
+                        }
+                    }
+                    // Clear the ViewModel error so it doesn't interfere
+                    authViewModel.clearError()
                 }
 
+            } catch let error as PasskeyError {
+                print("❌ [PasskeySetup] PasskeyError: \(error.localizedDescription)")
+                // Build detailed error message with recovery suggestion
+                var message = error.localizedDescription
+                if let suggestion = error.recoverySuggestion {
+                    message += "\n\n\(suggestion)"
+                }
+                await MainActor.run {
+                    errorMessage = message
+                    showError = true
+                    print("🚨 [PasskeySetup] Alert should show now - showError: \(showError)")
+                }
+                
             } catch {
-                errorMessage = error.localizedDescription
-                showError = true
+                print("❌ [PasskeySetup] Unknown error: \(error.localizedDescription)")
+                await MainActor.run {
+                    errorMessage = "An unexpected error occurred: \(error.localizedDescription)\n\nPlease try again."
+                    showError = true
+                    print("🚨 [PasskeySetup] Alert should show now - showError: \(showError)")
+                }
             }
 
-            isAuthenticating = false
+            await MainActor.run {
+                isAuthenticating = false
+            }
         }
     }
 
@@ -232,26 +307,37 @@ struct InfoCard: View {
 
 // MARK: - Preview
 
-#Preview {
-    NavigationStack {
-        PasskeySetupView(
-            zunoTag: "alice",
-            displayName: "Alice",
-            email: "alice@example.com",
-            isRegistration: true
-        )
-        .modelContainer(ModelContainer.preview)
-    }
-}
+@available(iOS 17.0, *)
+struct PasskeySetupView_Previews: PreviewProvider {
+    static var previews: some View {
+        let schema = Schema([LocalUser.self, LocalWallet.self, LocalTransaction.self, CachedData.self, AppSettings.self])
+        let container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+        let authViewModel = AuthViewModel(modelContext: container.mainContext)
 
-#Preview("Login") {
-    NavigationStack {
-        PasskeySetupView(
-            zunoTag: "alice",
-            displayName: nil,
-            email: nil,
-            isRegistration: false
-        )
-        .modelContainer(ModelContainer.preview)
+        Group {
+            NavigationStack {
+                PasskeySetupView(
+                    zunoTag: "alice",
+                    displayName: "Alice",
+                    email: "alice@example.com",
+                    isRegistration: true
+                )
+                .environmentObject(authViewModel)
+                .modelContainer(container)
+            }
+            .previewDisplayName("Registration")
+
+            NavigationStack {
+                PasskeySetupView(
+                    zunoTag: "alice",
+                    displayName: nil,
+                    email: nil,
+                    isRegistration: false
+                )
+                .environmentObject(authViewModel)
+                .modelContainer(container)
+            }
+            .previewDisplayName("Login")
+        }
     }
 }

@@ -23,28 +23,37 @@ final class AuthService: ObservableObject {
     // MARK: - Authentication Status
 
     /// Check if user is authenticated by validating stored token
+    /// NOTE: This only checks if credentials EXIST, it does NOT auto-login
+    /// User must authenticate via biometrics or passkey to actually login
     func checkAuthStatus() async {
-        do {
-            // Check if we have a valid access token
-            let token = try KeychainManager.shared.retrieveString(forKey: Config.KeychainKeys.accessToken)
-
-            guard !token.isEmpty else {
-                await logout()
-                return
-            }
-
-            // Try to fetch current user from API
-            let userResponse = try await APIClient.shared.getCurrentUser()
-
-            // Save or update user in local database
-            let localUser = try await saveUser(userResponse)
-            self.currentUser = localUser
-            self.isAuthenticated = true
-
-        } catch {
-            // Token invalid or expired
-            await logout()
+        print("🔐 [AuthService] Checking auth status...")
+        
+        // Check if we have stored credentials
+        let hasToken = KeychainManager.shared.exists(forKey: Config.KeychainKeys.accessToken)
+        let hasUserID = KeychainManager.shared.exists(forKey: Config.KeychainKeys.userID)
+        
+        print("   Has token: \(hasToken), Has userID: \(hasUserID)")
+        
+        // SECURITY: Do NOT auto-login even if credentials exist
+        // User must authenticate via biometrics or passkey
+        // This prevents unauthorized access if someone has physical access to the device
+        
+        if !hasToken || !hasUserID {
+            print("⚠️ [AuthService] No stored credentials - user must register/login")
+        } else {
+            print("🔐 [AuthService] Credentials found - user must authenticate with biometrics")
         }
+        
+        // Always start as not authenticated - require explicit authentication
+        self.isAuthenticated = false
+        self.currentUser = nil
+    }
+    
+    /// Check if user has stored credentials (for showing appropriate login UI)
+    func hasStoredCredentials() -> Bool {
+        let hasToken = KeychainManager.shared.exists(forKey: Config.KeychainKeys.accessToken)
+        let hasUserID = KeychainManager.shared.exists(forKey: Config.KeychainKeys.userID)
+        return hasToken && hasUserID
     }
 
     // MARK: - Registration
@@ -70,6 +79,7 @@ final class AuthService: ObservableObject {
         let authResponse = try await passkeyService.register(
             zunoTag: zunoTag,
             displayName: displayName,
+            email: email,
             window: window
         )
 
@@ -121,8 +131,45 @@ final class AuthService: ObservableObject {
 
     // MARK: - Biometric Quick Login
 
-    /// Quick login with biometrics (requires prior passkey login)
+    /// Quick login after biometric authentication has already been verified
+    /// This method assumes biometric auth was already done by the caller
     func quickLogin() async throws -> LocalUser {
+        print("🔐 [AuthService] Quick login - loading user from stored credentials")
+        
+        // Check if we have stored credentials
+        guard let userId = try? KeychainManager.shared.retrieveString(forKey: Config.KeychainKeys.userID),
+              !userId.isEmpty else {
+            print("❌ [AuthService] No stored user ID")
+            throw AuthError.noStoredCredentials
+        }
+        
+        // Get stored zuno tag for logging
+        let zunoTag = try? KeychainManager.shared.retrieveString(forKey: Config.KeychainKeys.zunoTag)
+        print("🔐 [AuthService] Found stored credentials for @\(zunoTag ?? "unknown")")
+
+        // Fetch current user from API
+        do {
+            let userResponse = try await APIClient.shared.getCurrentUser()
+            print("✅ [AuthService] Fetched user from API: @\(userResponse.zunoTag)")
+
+            // Save or update user in local database
+            let localUser = try await saveUser(userResponse)
+
+            // Update auth state
+            self.currentUser = localUser
+            self.isAuthenticated = true
+            
+            print("✅ [AuthService] Quick login successful")
+            return localUser
+        } catch {
+            print("❌ [AuthService] Failed to fetch user from API: \(error)")
+            // Token might be expired - clear credentials
+            throw AuthError.tokenExpired
+        }
+    }
+    
+    /// Quick login with biometrics (performs biometric auth + loads user)
+    func quickLoginWithBiometrics() async throws -> LocalUser {
         // Check if biometric authentication is available
         guard biometricService.biometricsAvailable else {
             throw AuthError.biometricsNotAvailable
@@ -134,37 +181,29 @@ final class AuthService: ObservableObject {
             throw AuthError.biometricAuthenticationFailed
         }
 
-        // Check if we have stored credentials
-        guard let userId = try? KeychainManager.shared.retrieveString(forKey: Config.KeychainKeys.userID),
-              let zunoTag = try? KeychainManager.shared.retrieveString(forKey: Config.KeychainKeys.zunoTag),
-              !userId.isEmpty, !zunoTag.isEmpty else {
-            throw AuthError.noStoredCredentials
-        }
-
-        // Fetch current user from API
-        let userResponse = try await APIClient.shared.getCurrentUser()
-
-        // Save or update user in local database
-        let localUser = try await saveUser(userResponse)
-
-        // Update auth state
-        self.currentUser = localUser
-        self.isAuthenticated = true
-
-        return localUser
+        // Now load the user
+        return try await quickLogin()
     }
 
     // MARK: - Logout
 
     /// Logout the current user
     func logout() async {
-        // Clear tokens from keychain
+        print("🔐 [AuthService] Logging out user")
+        
+        // Clear ALL authentication data from keychain
         try? KeychainManager.shared.delete(forKey: Config.KeychainKeys.accessToken)
         try? KeychainManager.shared.delete(forKey: Config.KeychainKeys.refreshToken)
+        try? KeychainManager.shared.delete(forKey: Config.KeychainKeys.userID)
+        try? KeychainManager.shared.delete(forKey: Config.KeychainKeys.zunoTag)
+        
+        print("✓ [AuthService] Cleared all keychain data")
 
         // Update auth state
         self.currentUser = nil
         self.isAuthenticated = false
+        
+        print("✓ [AuthService] Logout complete")
     }
 
     // MARK: - User Profile Management
@@ -174,7 +213,8 @@ final class AuthService: ObservableObject {
         email: String? = nil,
         displayName: String? = nil,
         defaultCurrency: String? = nil,
-        preferredNetwork: String? = nil
+        preferredNetwork: String? = nil,
+        preferredStablecoin: String? = nil
     ) async throws -> LocalUser {
         guard isAuthenticated else {
             throw AuthError.notAuthenticated
@@ -185,7 +225,8 @@ final class AuthService: ObservableObject {
             email: email,
             displayName: displayName,
             defaultCurrency: defaultCurrency,
-            preferredNetwork: preferredNetwork
+            preferredNetwork: preferredNetwork,
+            preferredStablecoin: preferredStablecoin
         )
 
         // Save updated user in local database
@@ -225,6 +266,7 @@ final class AuthService: ObservableObject {
             existingUser.displayName = userResponse.displayName
             existingUser.defaultCurrency = userResponse.defaultCurrency ?? Config.App.defaultCurrency
             existingUser.preferredNetwork = userResponse.preferredNetwork ?? Config.App.defaultNetwork
+            existingUser.preferredStablecoin = userResponse.preferredStablecoin ?? "USDC"
             existingUser.isVerified = userResponse.isVerified
             existingUser.updatedAt = Date()
             try modelContext.save()
